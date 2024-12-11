@@ -1,4 +1,3 @@
-
 /* Program to display address information about the process */
 /* Adapted from Gray, J., program 1.4 */
 #include <stdio.h>
@@ -17,7 +16,7 @@ char *cptr = "This message is output by the function showit()\n"; /* Static */
 char buffer1[25];
 int showit(); /* Function prototype */
 
-main() {
+void main() {
   int i = 0; /* Automatic variable */
 
   /* Printing addressing information */
@@ -33,7 +32,6 @@ main() {
   strcpy(buffer1, "A demonstration\n");   /* Library function */
   write(1, buffer1, strlen(buffer1) + 1); /* System call */
   showit(cptr);
-
 } /* end of main function */
 
 /* A function follows */
