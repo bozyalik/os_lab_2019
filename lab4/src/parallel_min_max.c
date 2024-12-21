@@ -9,189 +9,196 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <getopt.h>
-#include <signal.h> // Добавили заголовочный файл для работы с сигналами
+#include <signal.h>
+
 #include "find_min_max.h"
 #include "utils.h"
 
-volatile sig_atomic_t timeout_flag = 0; // Глобальная переменная для отслеживания таймаута
+int timeout = 0; // Таймаут в секундах (0 - без таймаута)
+pid_t *child_pids; // Массив для хранения PID дочерних процессов
+int active_child_processes = 0;
 
-void timeout_handler(int signo) {
-    timeout_flag = 1; // Функция обработчика сигнала
+// Обработчик сигнала для таймаута
+void handle_timeout(int sig) {
+    for (int i = 0; i < active_child_processes; i++) {
+        kill(child_pids[i], SIGKILL); // отправляет сигнал SIGKILL всем процессам по их PID
+    }
+    while (wait(NULL) > 0); // Дожидаемся завершения всех процессов
+    free(child_pids); // освобождает память
+    exit(1); // Завершаем программу
 }
 
 int main(int argc, char **argv) {
-  int seed = -1;
-  int array_size = -1;
-  int pnum = -1;
-  bool with_files = false;
-  int timeout = -1; // Переменная для хранения таймаута
+    int seed = -1;
+    int array_size = -1;
+    int pnum = -1;
+    bool with_files = false;
 
-  while (true) {
-    int current_optind = optind ? optind : 1;
+    while (true) {
+        int current_optind = optind ? optind : 1;
 
-    static struct option options[] = {
-        {"seed", required_argument, 0, 0},
-        {"array_size", required_argument, 0, 0},
-        {"pnum", required_argument, 0, 0},
-        {"by_files", no_argument, 0, 'f'},
-        {"timeout", required_argument, 0, 0}, // Добавили опцию для указания таймаута
-        {0, 0, 0, 0}};
+        static struct option options[] = {
+            {"seed", required_argument, 0, 0},
+            {"array_size", required_argument, 0, 0},
+            {"pnum", required_argument, 0, 0},
+            {"timeout", required_argument, 0, 0},
+            {"by_files", no_argument, 0, 'f'},
+            {0, 0, 0, 0}
+        };
 
-    int option_index = 0;
-    int c = getopt_long(argc, argv, "f", options, &option_index);
+        int option_index = 0;
+        int c = getopt_long(argc, argv, "f", options, &option_index);
 
-    if (c == -1) break;
+        if (c == -1) break;
 
-    switch (c) {
-      case 0:
-        switch (option_index) {
-          case 0:
-            seed = atoi(optarg);
-            break;
-          case 1:
-            array_size = atoi(optarg);
-            break;
-          case 2:
-            pnum = atoi(optarg);
-            break;
-          case 3:
-            with_files = true;
-            break;
-          case 4: // Обработка таймаута
-            timeout = atoi(optarg);
-            if (timeout > 0) {
-                signal(SIGALRM, timeout_handler); // Устанавливаем обработчик сигнала
-                alarm(timeout); // Устанавливаем таймер таймаута
-            }
-            break;
-          default:
-            printf("Index %d is out of options\n", option_index);
+        switch (c) {
+            case 0:
+                switch (option_index) {
+                    case 0: seed = atoi(optarg); break;
+                    case 1: array_size = atoi(optarg); break;
+                    case 2: pnum = atoi(optarg); break;
+                    case 3: timeout = atoi(optarg); break;
+                    case 4: with_files = true; break;
+                    default: printf("Index %d is out of options\n", option_index);
+                }
+                break;
+            case 'f':
+                with_files = true;
+                break;
+            case '?':
+                break;
+            default:
+                printf("getopt returned character code 0%o?\n", c);
         }
-        break;
-      case 'f':
-        with_files = true;
-        break;
-      case '?':
-        break;
-      default:
-        printf("getopt returned character code 0%o?\n", c);
     }
-  }
 
-  if (optind < argc) {
-    printf("Has at least one no option argument\n");
-    return 1;
-  }
-
-  if (seed == -1 || array_size == -1 || pnum == -1) {
-    printf("Usage: %s --seed \"num\" --array_size \"num\" --pnum \"num\" \n", argv[0]);
-    return 1;
-  }
-
-  int *array = malloc(sizeof(int) * array_size);
-  GenerateArray(array, array_size, seed);
-
-  int active_child_processes = 0;
-  int **pipes = (int **)malloc(sizeof(int *) * pnum);
-  pid_t *child_pids = (pid_t *)malloc(sizeof(pid_t) * pnum); // Массив PID дочерних процессов
-
-  struct timeval start_time;
-  gettimeofday(&start_time, NULL);
-
-  for (int i = 0; i < pnum; i++) {
-    pipes[i] = (int *)malloc(sizeof(int) * 2);
-    if (pipe(pipes[i]) == -1) {
-      perror("pipe");
-      return 1;
+    if (optind < argc) {
+        printf("Has at least one no option argument\n");
+        return 1;
     }
-    pid_t child_pid = fork();
-    if (child_pid >= 0) {
-      // successful fork
-      active_child_processes += 1;
-      if (child_pid == 0) {
-        // child process
-        int elements_per_process = array_size / pnum;
-        int start = i * elements_per_process;
-        int end = (i == pnum - 1) ? array_size : (i + 1) * elements_per_process;
 
-        struct MinMax local_min_max = GetMinMax(array, start, end);
+    if (seed == -1 || array_size == -1 || pnum == -1) {
+        printf("Usage: %s --seed \"num\" --array_size \"num\" --pnum \"num\" [--timeout \"num\"]\n", argv[0]);
+        return 1;
+    }
 
-        if (with_files) {
-          char filename[20];
-          sprintf(filename, "part%d.txt", i);
-          FILE *file = fopen(filename, "w");
-          fwrite(&local_min_max, sizeof(struct MinMax), 1, file);
-          fclose(file);
+    int *array = malloc(sizeof(int) * array_size);
+    GenerateArray(array, array_size, seed);
+
+    child_pids = malloc(sizeof(pid_t) * pnum); // для хранения всех pid
+
+    struct timeval start_time;
+    gettimeofday(&start_time, NULL);
+
+    int pipe_fd[2];
+    if (pipe(pipe_fd) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
+    }
+
+    if (timeout > 0) {
+        signal(SIGALRM, handle_timeout); // связал сигнал SIGALRM с обработчиком handle_timeout
+        alarm(timeout); // Устанавливаем таймер. Если он сработает, посылается сигнал SIGALRM
+    }
+
+    for (int i = 0; i < pnum; i++) {
+        pid_t child_pid = fork();
+        if (child_pid >= 0) {
+            active_child_processes++;
+            child_pids[i] = child_pid;
+            if (child_pid == 0) {
+                if (!with_files) {
+                    close(pipe_fd[0]);
+
+                    int start_index = (array_size / pnum) * i;
+                    int end_index = (i == pnum - 1) ? array_size : start_index + (array_size / pnum);
+
+                    int local_min = INT_MAX;
+                    int local_max = INT_MIN;
+
+                    for (int j = start_index; j < end_index; j++) {
+                        if (array[j] < local_min) local_min = array[j];
+                        if (array[j] > local_max) local_max = array[j];
+                    }
+
+                    write(pipe_fd[1], &local_min, sizeof(int));
+                    write(pipe_fd[1], &local_max, sizeof(int));
+
+                    close(pipe_fd[1]);
+                } else {
+                    char filename[20];
+                    sprintf(filename, "results_%d.txt", i);
+                    FILE *file = fopen(filename, "w");
+                    int start_index = (array_size / pnum) * i;
+                    int end_index = (i == pnum - 1) ? array_size : start_index + (array_size / pnum);
+
+                    int local_min = INT_MAX;
+                    int local_max = INT_MIN;
+
+                    for (int j = start_index; j < end_index; j++) {
+                        if (array[j] < local_min) local_min = array[j];
+                        if (array[j] > local_max) local_max = array[j];
+                    }
+
+                    fprintf(file, "%d %d\n", local_min, local_max);
+                    fclose(file);
+                }
+                return 0;
+            }
         } else {
-          close(pipes[i][0]);  // close read end
-          write(pipes[i][1], &local_min_max, sizeof(struct MinMax));
-          close(pipes[i][1]);
+            printf("Fork failed!\n");
+            return 1;
         }
-        return 0;
-      }
-      else {
-        child_pids[i] = child_pid; // Сохраняем PID дочернего процесса
-      }
-    } else {
-      printf("Fork failed!\n");
-      return 1;
     }
-  }
 
-  while (active_child_processes > 0) {
-    int status;
-    if (timeout_flag) {
-        // Timeout has occurred, send SIGKILL to child processes
+    while (active_child_processes > 0) {
+        wait(NULL);
+        active_child_processes--;
+    }
+
+    struct MinMax min_max;
+    min_max.min = INT_MAX;
+    min_max.max = INT_MIN;
+
+    if (!with_files) {
         for (int i = 0; i < pnum; i++) {
-            if (child_pids[i] > 0) {
-                kill(child_pids[i], SIGKILL);
-            }
+            int min_from_pipe, max_from_pipe;
+
+            read(pipe_fd[0], &min_from_pipe, sizeof(int));
+            read(pipe_fd[0], &max_from_pipe, sizeof(int));
+
+            if (min_from_pipe < min_max.min) min_max.min = min_from_pipe;
+            if (max_from_pipe > min_max.max) min_max.max = max_from_pipe;
+        }
+
+        close(pipe_fd[0]);
+    } else {
+        for (int i = 0; i < pnum; i++) {
+            char filename[20];
+            sprintf(filename, "results_%d.txt", i);
+            FILE *file = fopen(filename, "r");
+
+            int min_from_file, max_from_file;
+            fscanf(file, "%d %d", &min_from_file, &max_from_file);
+
+            if (min_from_file < min_max.min) min_max.min = min_from_file;
+            if (max_from_file > min_max.max) min_max.max = max_from_file;
+
+            fclose(file);
         }
     }
-    wait(&status);
-    active_child_processes -= 1;
-  }
 
-  struct MinMax min_max;
-  min_max.min = INT_MAX;
-  min_max.max = INT_MIN;
+    struct timeval finish_time;
+    gettimeofday(&finish_time, NULL);
+    double elapsed_time = (finish_time.tv_sec - start_time.tv_sec) * 1000.0;
+    elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
 
-  for (int i = 0; i < pnum; i++) {
-    int min = INT_MAX;
-    int max = INT_MIN;
+    free(array);
+    free(child_pids);
 
-    if (with_files) {
-      char filename[20];
-      sprintf(filename, "part%d.txt", i);
-      FILE *file = fopen(filename, "r");
-      fread(&min_max, sizeof(struct MinMax), 1, file);
-      fclose(file);
-    } else {
-      close(pipes[i][1]);  // close write end
-      read(pipes[i][0], &min_max, sizeof(struct MinMax));
-      close(pipes[i][0]);
-    }
+    printf("Min: %d\n", min_max.min);
+    printf("Max: %d\n", min_max.max);
+    printf("Elapsed time: %fms\n", elapsed_time);
 
-    if (min_max.min < min) min = min_max.min;
-    if (min_max.max > max) max = min_max.max;
-  }
-
-  struct timeval finish_time;
-  gettimeofday(&finish_time, NULL);
-
-  double elapsed_time = (finish_time.tv_sec - start_time.tv_sec) * 1000.0;
-  elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
-
-  free(array);
-  for (int i = 0; i < pnum; i++) {
-    free(pipes[i]);
-  }
-  free(pipes);
-  free(child_pids);
-
-  printf("Min: %d\n", min_max.min);
-  printf("Max: %d\n", min_max.max);
-  printf("Elapsed time: %fms\n", elapsed_time);
-  fflush(NULL);
-  return 0;
+    return 0;
 }
