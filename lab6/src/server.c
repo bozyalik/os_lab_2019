@@ -28,15 +28,14 @@ uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
     a = (a * 2) % mod;
     b /= 2;
   }
-
   return result % mod;
 }
 
 uint64_t Factorial(const struct FactorialArgs *args) {
   uint64_t ans = 1;
-
-  // TODO: your code here
-
+  for (uint64_t i = args->begin; i <= args->end; i++) {
+    ans = MultModulo(ans, i, args->mod);
+  }
   return ans;
 }
 
@@ -67,11 +66,17 @@ int main(int argc, char **argv) {
       switch (option_index) {
       case 0:
         port = atoi(optarg);
-        // TODO: your code here
+        if (port <= 0 || port > USHRT_MAX) {
+          printf("port is a positive number in unsigned int data type.\n");
+          return 1;
+        }
         break;
       case 1:
         tnum = atoi(optarg);
-        // TODO: your code here
+        if (tnum <= 0) {
+          printf("tnum is a positive number.\n");
+          return 1;
+        }
         break;
       default:
         printf("Index %d is out of options\n", option_index);
@@ -154,17 +159,16 @@ int main(int argc, char **argv) {
       memcpy(&end, from_client + sizeof(uint64_t), sizeof(uint64_t));
       memcpy(&mod, from_client + 2 * sizeof(uint64_t), sizeof(uint64_t));
 
-      fprintf(stdout, "Receive: %llu %llu %llu\n", begin, end, mod);
+      fprintf(stdout, "Receive: %lu %lu %lu\n", begin, end, mod);
 
       struct FactorialArgs args[tnum];
+      uint64_t range = (end - begin + 1) / tnum;
       for (uint32_t i = 0; i < tnum; i++) {
-        // TODO: parallel somehow
-        args[i].begin = 1;
-        args[i].end = 1;
+        args[i].begin = begin + i * range;
+        args[i].end = (i == tnum - 1) ? end : begin + (i + 1) * range - 1;
         args[i].mod = mod;
 
-        if (pthread_create(&threads[i], NULL, ThreadFactorial,
-                           (void *)&args[i])) {
+        if (pthread_create(&threads[i], NULL, ThreadFactorial, (void *)&args[i])) {
           printf("Error: pthread_create failed!\n");
           return 1;
         }
@@ -177,7 +181,7 @@ int main(int argc, char **argv) {
         total = MultModulo(total, result, mod);
       }
 
-      printf("Total: %llu\n", total);
+      printf("Total: %lu\n", total);
 
       char buffer[sizeof(total)];
       memcpy(buffer, &total, sizeof(total));
